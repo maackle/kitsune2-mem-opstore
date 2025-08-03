@@ -16,7 +16,9 @@ fn op_at_location(loc: u32) -> TestMemoryOp {
 
 #[tokio::test]
 async fn process_and_retrieve_op() {
-    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new(TEST_SPACE_ID));
+    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new_test(
+        TEST_SPACE_ID,
+    ));
 
     let op = TestMemoryOp::new(Timestamp::now(), vec![1, 2, 3]);
     let op_id = op.compute_op_id();
@@ -35,7 +37,9 @@ async fn process_and_retrieve_op() {
 
 #[tokio::test]
 async fn retrieve_op_ids_bounded_empty_arc() {
-    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new(TEST_SPACE_ID));
+    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new_test(
+        TEST_SPACE_ID,
+    ));
 
     op_store
         .process_incoming_ops(vec![op_at_location(1).clone().into()])
@@ -55,7 +59,9 @@ async fn retrieve_op_ids_bounded_empty_arc() {
 
 #[tokio::test]
 async fn retrieve_op_ids_bounded_limit_applied() {
-    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new(TEST_SPACE_ID));
+    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new_test(
+        TEST_SPACE_ID,
+    ));
 
     op_store
         .process_incoming_ops(vec![
@@ -80,7 +86,9 @@ async fn retrieve_op_ids_bounded_limit_applied() {
 
 #[tokio::test]
 async fn retrieve_op_ids_bounded_across_multiple_arcs() {
-    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new(TEST_SPACE_ID));
+    let op_store: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<TestMemoryOp>::new_test(
+        TEST_SPACE_ID,
+    ));
 
     op_store
         .process_incoming_ops(vec![

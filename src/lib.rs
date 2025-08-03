@@ -10,7 +10,6 @@ use kitsune2_api::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -23,22 +22,14 @@ mod test;
 
 /// The mem op store implementation provided by Kitsune2.
 #[derive(Debug)]
-pub struct MemOpStoreFactory<MemOp> {
-    _mem_op: PhantomData<MemOp>,
-}
-
-impl<MemOp: MemoryOp> Default for MemOpStoreFactory<MemOp> {
-    fn default() -> Self {
-        Self {
-            _mem_op: PhantomData::<MemOp>::default(),
-        }
-    }
+pub struct MemOpStoreFactory<MemOp: MemoryOp> {
+    op_sender: NotificationSender<MemOp>,
 }
 
 impl<MemOp: MemoryOp> MemOpStoreFactory<MemOp> {
     /// Construct a new MemOpStoreFactory.
-    pub fn create() -> DynOpStoreFactory {
-        let out: DynOpStoreFactory = Arc::new(MemOpStoreFactory::<MemOp>::default());
+    pub fn new(op_sender: NotificationSender<MemOp>) -> DynOpStoreFactory {
+        let out: DynOpStoreFactory = Arc::new(MemOpStoreFactory::<MemOp> { op_sender });
         out
     }
 }
@@ -57,8 +48,9 @@ impl<MemOp: MemoryOp> OpStoreFactory for MemOpStoreFactory<MemOp> {
         _builder: Arc<Builder>,
         space: SpaceId,
     ) -> BoxFut<'static, K2Result<DynOpStore>> {
+        let op_sender = self.op_sender.clone();
         Box::pin(async move {
-            let out: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<MemOp>::new(space));
+            let out: DynOpStore = Arc::new(Kitsune2MemoryOpStore::<MemOp>::new(space, op_sender));
             Ok(out)
         })
     }
@@ -77,6 +69,7 @@ pub struct TestMemoryOp {
 
 impl MemoryOp for TestMemoryOp {
     type Error = Infallible;
+    type Notification = ();
 
     fn from_bytes(bytes: Bytes) -> Result<Self, Infallible> {
         Ok(serde_json::from_slice(&bytes).expect("failed to deserialize MemoryOp from bytes"))
@@ -100,6 +93,10 @@ impl MemoryOp for TestMemoryOp {
 
     fn created_at(&self) -> Timestamp {
         self.created_at
+    }
+
+    fn notification(&self) -> Option<Self::Notification> {
+        None
     }
 }
 
@@ -208,6 +205,7 @@ pub trait MemoryOp:
 {
     /// The error for serializing and deserializing the op.
     type Error: std::fmt::Display + std::fmt::Debug + 'static + Send + Sync;
+    type Notification: Send + Sync + 'static + std::fmt::Debug;
 
     /// Deserialize an op from bytes.
     fn from_bytes(bytes: Bytes) -> Result<Self, Self::Error>;
@@ -217,23 +215,37 @@ pub trait MemoryOp:
     fn compute_op_id(&self) -> OpId;
     /// Get the creation timestamp of the op.
     fn created_at(&self) -> Timestamp;
+    /// Get the notification for this op.
+    fn notification(&self) -> Option<Self::Notification>;
 }
 
 /// The in-memory op store implementation for Kitsune2.
 ///
 /// Intended for testing only, because it provides no persistence of op data.
 #[derive(Debug)]
-struct Kitsune2MemoryOpStore<MemOp> {
+struct Kitsune2MemoryOpStore<MemOp: MemoryOp> {
     _space: SpaceId,
     inner: RwLock<Kitsune2MemoryOpStoreInner<MemOp>>,
+    op_sender: tokio::sync::mpsc::Sender<MemOp::Notification>,
 }
 
 impl<MemOp: MemoryOp> Kitsune2MemoryOpStore<MemOp> {
     /// Create a new [Kitsune2MemoryOpStore].
-    pub fn new(space: SpaceId) -> Self {
+    pub fn new(space: SpaceId, op_sender: NotificationSender<MemOp>) -> Self {
         Self {
             _space: space,
             inner: Default::default(),
+            op_sender,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_test(space: SpaceId) -> Self {
+        let (op_sender, _) = tokio::sync::mpsc::channel(100);
+        Self {
+            _space: space,
+            inner: Default::default(),
+            op_sender,
         }
     }
 }
@@ -245,6 +257,9 @@ impl<MemOp: MemoryOp> std::ops::Deref for Kitsune2MemoryOpStore<MemOp> {
         &self.inner
     }
 }
+
+pub type NotificationSender<M> = tokio::sync::mpsc::Sender<<M as MemoryOp>::Notification>;
+pub type NotificationReceiver<M> = tokio::sync::mpsc::Receiver<<M as MemoryOp>::Notification>;
 
 /// The inner state of a [Kitsune2MemoryOpStore].
 #[derive(Debug)]
@@ -291,8 +306,12 @@ impl<MemOp: MemoryOp> OpStore for Kitsune2MemoryOpStore<MemOp> {
             let mut op_ids = Vec::with_capacity(ops_to_add.len());
             let mut lock = self.write().await;
             for (op_id, record) in ops_to_add {
+                let notification = record.op.notification();
                 lock.op_list.entry(op_id.clone()).or_insert(record);
                 op_ids.push(op_id);
+                if let Some(notification) = notification {
+                    self.op_sender.send(notification).await.unwrap();
+                }
             }
 
             Ok(op_ids)
