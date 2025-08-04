@@ -224,16 +224,16 @@ pub trait MemoryOp:
 /// Intended for testing only, because it provides no persistence of op data.
 #[derive(Debug)]
 struct Kitsune2MemoryOpStore<MemOp: MemoryOp> {
-    _space: SpaceId,
+    space: SpaceId,
     inner: RwLock<Kitsune2MemoryOpStoreInner<MemOp>>,
-    op_sender: tokio::sync::mpsc::Sender<MemOp::Notification>,
+    op_sender: NotificationSender<MemOp>,
 }
 
 impl<MemOp: MemoryOp> Kitsune2MemoryOpStore<MemOp> {
     /// Create a new [Kitsune2MemoryOpStore].
     pub fn new(space: SpaceId, op_sender: NotificationSender<MemOp>) -> Self {
         Self {
-            _space: space,
+            space,
             inner: Default::default(),
             op_sender,
         }
@@ -243,7 +243,7 @@ impl<MemOp: MemoryOp> Kitsune2MemoryOpStore<MemOp> {
     pub fn new_test(space: SpaceId) -> Self {
         let (op_sender, _) = tokio::sync::mpsc::channel(100);
         Self {
-            _space: space,
+            space,
             inner: Default::default(),
             op_sender,
         }
@@ -258,8 +258,15 @@ impl<MemOp: MemoryOp> std::ops::Deref for Kitsune2MemoryOpStore<MemOp> {
     }
 }
 
-pub type NotificationSender<M> = tokio::sync::mpsc::Sender<<M as MemoryOp>::Notification>;
-pub type NotificationReceiver<M> = tokio::sync::mpsc::Receiver<<M as MemoryOp>::Notification>;
+#[derive(Debug)]
+pub struct OpNotification<MemOp: MemoryOp> {
+    pub space: SpaceId,
+    pub op_id: OpId,
+    pub notification: Option<MemOp::Notification>,
+}
+
+pub type NotificationSender<M> = tokio::sync::mpsc::Sender<OpNotification<M>>;
+pub type NotificationReceiver<M> = tokio::sync::mpsc::Receiver<OpNotification<M>>;
 
 /// The inner state of a [Kitsune2MemoryOpStore].
 #[derive(Debug)]
@@ -308,10 +315,15 @@ impl<MemOp: MemoryOp> OpStore for Kitsune2MemoryOpStore<MemOp> {
             for (op_id, record) in ops_to_add {
                 let notification = record.op.notification();
                 lock.op_list.entry(op_id.clone()).or_insert(record);
-                op_ids.push(op_id);
-                if let Some(notification) = notification {
-                    self.op_sender.send(notification).await.unwrap();
-                }
+                op_ids.push(op_id.clone());
+                self.op_sender
+                    .send(OpNotification {
+                        space: self.space.clone(),
+                        op_id,
+                        notification,
+                    })
+                    .await
+                    .unwrap();
             }
 
             Ok(op_ids)
